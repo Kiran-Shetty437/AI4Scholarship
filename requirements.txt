@@ -1,5 +1,6 @@
-Flask==3.0.3
-openai>=1.0.0
-python-dotenv==1.0.1
-requests==2.32.3
-Werkzeug==3.0.3
+flask
+flask-cors
+gunicorn
+python-dotenv
+requests
+openai
