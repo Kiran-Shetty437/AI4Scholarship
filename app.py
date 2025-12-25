@@ -1,12 +1,10 @@
-from flask import Flask, render_template, request, session, redirect, url_for, flash
+from flask import Flask, render_template, request, session, redirect, url_for, flash, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from openai import OpenAI
 from dotenv import load_dotenv
-import random, smtplib, os, sqlite3, logging, uuid
+import random, os, sqlite3, logging, uuid
 
 # ---------------- BASIC SETUP ---------------- #
 
@@ -20,10 +18,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ---------------- CONFIG ---------------- #
 
-EMAIL_USER = os.getenv("MAIL_USER")
-EMAIL_PASS = os.getenv("MAIL_PASS")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ---------------- DATABASE ---------------- #
@@ -53,7 +48,6 @@ def init_db():
         """)
         conn.commit()
 
-# 🔴 VERY IMPORTANT
 init_db()
 
 # ---------------- OTP LOGIC ---------------- #
@@ -62,28 +56,6 @@ otp_store = {}
 
 def generate_otp(length=4):
     return ''.join(str(random.randint(0, 9)) for _ in range(length))
-
-def send_email(to_email, otp):
-    if not EMAIL_USER or not EMAIL_PASS:
-        logging.error("Email credentials missing")
-        return False
-
-    msg = MIMEMultipart()
-    msg["From"] = EMAIL_USER
-    msg["To"] = to_email
-    msg["Subject"] = "AI4Scholarship - OTP Verification"
-    msg.attach(MIMEText(f"Your OTP is: {otp}", "plain"))
-
-    try:
-        # ✅ TIMEOUT prevents Render worker crash
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.starttls()
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.send_message(msg)
-        return True
-    except Exception as e:
-        logging.error(f"Email send failed: {e}")
-        return False
 
 # ---------------- ROUTES ---------------- #
 
@@ -94,29 +66,26 @@ def index():
         password = request.form.get("password")
 
         if not email or not password:
-            flash("Email & password required", "error")
-            return redirect(url_for("index"))
+            return jsonify({"status": "error", "message": "Email & password required"}), 400
 
         with get_db() as conn:
             c = conn.cursor()
             c.execute("SELECT id FROM students WHERE email=?", (email,))
             if c.fetchone():
-                flash("Account already exists", "error")
-                return redirect(url_for("login"))
+                return jsonify({"status": "error", "message": "Account already exists"}), 409
 
         otp = generate_otp()
+
         otp_store[email] = {
             "otp": otp,
             "expires": datetime.now() + timedelta(minutes=3),
             "password": generate_password_hash(password)
         }
 
-        if send_email(email, otp):
-            session["email"] = email
-            flash("OTP sent to your email", "success")
-            return redirect(url_for("verify"))
-        else:
-            flash("OTP service unavailable. Try again later.", "error")
+        session["email"] = email
+
+        # 🔑 RETURN OTP TO FRONTEND (for EmailJS only)
+        return jsonify({"status": "ok", "otp": otp})
 
     return render_template("signup.html")
 
@@ -130,7 +99,12 @@ def verify():
         otp_input = request.form.get("otp")
         record = otp_store.get(email)
 
-        if not record or datetime.now() > record["expires"]:
+        if not record:
+            flash("OTP not found", "error")
+            return redirect(url_for("index"))
+
+        if datetime.now() > record["expires"]:
+            del otp_store[email]
             flash("OTP expired", "error")
             return redirect(url_for("index"))
 
@@ -141,6 +115,7 @@ def verify():
         session["verified_email"] = email
         session["password"] = record["password"]
         del otp_store[email]
+
         return redirect(url_for("details"))
 
     return render_template("verify.html")
@@ -178,6 +153,7 @@ def details():
 
         session["student_email"] = email
         session["student_name"] = data[0]
+
         return redirect(url_for("chat"))
 
     return render_template("details.html")
@@ -199,6 +175,7 @@ def login():
 
         session["student_email"] = email
         session["student_name"] = user[0]
+
         return redirect(url_for("chat"))
 
     return render_template("login.html")
@@ -246,14 +223,10 @@ def logout():
 def favicon():
     return "", 204
 
-# ---------------- ERROR HANDLER ---------------- #
-
 @app.errorhandler(Exception)
 def handle_error(e):
     logging.exception("Unhandled error")
     return "Something went wrong", 500
-
-# ---------------- RUN ---------------- #
 
 if __name__ == "__main__":
     app.run(debug=True)
