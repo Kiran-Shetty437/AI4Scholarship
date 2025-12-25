@@ -8,7 +8,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import random, smtplib, os, sqlite3, logging, uuid
 
-# ----------------- BASIC SETUP ----------------- #
+# ---------------- BASIC SETUP ---------------- #
 
 load_dotenv()
 
@@ -16,10 +16,9 @@ app = Flask(__name__)
 CORS(app)
 
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
-
 logging.basicConfig(level=logging.INFO)
 
-# ----------------- CONFIG ----------------- #
+# ---------------- CONFIG ---------------- #
 
 EMAIL_USER = os.getenv("MAIL_USER")
 EMAIL_PASS = os.getenv("MAIL_PASS")
@@ -27,7 +26,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# ----------------- DATABASE ----------------- #
+# ---------------- DATABASE ---------------- #
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "students.db")
@@ -54,10 +53,10 @@ def init_db():
         """)
         conn.commit()
 
-# ✅ VERY IMPORTANT — CREATE TABLE ON STARTUP
+# 🔴 VERY IMPORTANT
 init_db()
 
-# ----------------- OTP LOGIC ----------------- #
+# ---------------- OTP LOGIC ---------------- #
 
 otp_store = {}
 
@@ -66,6 +65,7 @@ def generate_otp(length=4):
 
 def send_email(to_email, otp):
     if not EMAIL_USER or not EMAIL_PASS:
+        logging.error("Email credentials missing")
         return False
 
     msg = MIMEMultipart()
@@ -75,16 +75,17 @@ def send_email(to_email, otp):
     msg.attach(MIMEText(f"Your OTP is: {otp}", "plain"))
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        # ✅ TIMEOUT prevents Render worker crash
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
         return True
     except Exception as e:
-        logging.error(f"Email error: {e}")
+        logging.error(f"Email send failed: {e}")
         return False
 
-# ----------------- ROUTES ----------------- #
+# ---------------- ROUTES ---------------- #
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -93,7 +94,7 @@ def index():
         password = request.form.get("password")
 
         if not email or not password:
-            flash("Email & Password required", "error")
+            flash("Email & password required", "error")
             return redirect(url_for("index"))
 
         with get_db() as conn:
@@ -115,7 +116,7 @@ def index():
             flash("OTP sent to your email", "success")
             return redirect(url_for("verify"))
         else:
-            flash("Failed to send OTP", "error")
+            flash("OTP service unavailable. Try again later.", "error")
 
     return render_template("signup.html")
 
@@ -134,7 +135,7 @@ def verify():
             return redirect(url_for("index"))
 
         if otp_input != record["otp"]:
-            flash("Wrong OTP", "error")
+            flash("Invalid OTP", "error")
             return redirect(url_for("verify"))
 
         session["verified_email"] = email
@@ -148,6 +149,7 @@ def verify():
 def details():
     email = session.get("verified_email")
     password = session.get("password")
+
     if not email:
         return redirect(url_for("index"))
 
@@ -167,10 +169,10 @@ def details():
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""
-                INSERT INTO students
-                (name, gender, dob, total_income, caste,
-                 father_occupation, mother_occupation, email, password)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO students
+            (name, gender, dob, total_income, caste,
+             father_occupation, mother_occupation, email, password)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, data)
             conn.commit()
 
@@ -237,20 +239,21 @@ def chat():
 @app.route("/logout")
 def logout():
     session.clear()
+    flash("Logged out successfully", "success")
     return redirect(url_for("login"))
 
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
 
-# ----------------- ERROR HANDLER ----------------- #
+# ---------------- ERROR HANDLER ---------------- #
 
 @app.errorhandler(Exception)
 def handle_error(e):
     logging.exception("Unhandled error")
     return "Something went wrong", 500
 
-# ----------------- RUN ----------------- #
+# ---------------- RUN ---------------- #
 
 if __name__ == "__main__":
     app.run(debug=True)
